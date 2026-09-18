@@ -6,19 +6,7 @@ Userspace tooling for temporary-rooted Android phones — born on a Sony Xperia 
 **Network Signal Guru (NSG)** full Qualcomm DIAG logging that normally only works
 on Samsung devices.
 
-```
- NSG engine ── open()/read() ── /dev/umts_router ──▶ /dev/pts/N (PTY)
-                     (Samsung node emulation)            │
-                                                    diagtty daemon
-                                                    · HDLC (0x7e) framing
-                                                    · strips {ver,len} header
-                                                          │
-                                                  AF_QIPCRTR socket
-                                                  node 0 · port 28
-                                                          │
-                                                  DIAG service 4097
-                                                     SM8550 modem
-```
+![Temp-root DIAG bridge architecture: NSG engine opening the emulated Samsung node, backed by a PTY whose master side is the diagtty daemon relaying to the QRTR diag service on the modem](https://s3.licson.net/licson/blog/temp-root-nsg-diag-bridge/architecture.svg)
 
 Everything the kit creates lives in RAM or `/data/local/tmp` and is gone after a
 reboot: no patched boot image, no modified partitions, verified boot stays green.
@@ -115,6 +103,8 @@ The allowlist survives reboots (it lives in `/data`); root itself does not.
   belongs to the GhostLock authors; this repo ships only userspace.
 
 ## Documentation
+
+![Causal chain of the cold-boot SELinux corruption: a policy reload races the boot-time fork storm, processes spawn unlabeled, zygote aborts, the framework crash-loops — fixed by skipping the reload when ksud is absent](https://s3.licson.net/licson/blog/temp-root-nsg-diag-bridge/cold-boot-chain.svg)
 
 - [docs/NSG-diag.md](docs/NSG-diag.md) — QRTR service discovery, DIAG framing,
   Samsung node emulation, DCI port.
