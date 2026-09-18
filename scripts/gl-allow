@@ -1,0 +1,6 @@
+#!/bin/bash
+# Manage the glsu per-app root allowlist on the connected Xperia
+# usage: ./gl-allow add <package> | add-recent [N] | list | remove <package>
+ADB="${ADB:-$(command -v adb || echo "$HOME/Downloads/platform-tools/adb")}"
+[ $# -ge 1 ] || { grep '^# usage' "$0" | cut -c3-; exit 1; }
+exec "$ADB" shell "/system/bin/su -c '/data/local/tmp/gl/gl-allow.sh $*'"
