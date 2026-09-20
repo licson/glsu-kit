@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -15,6 +16,23 @@
 #define QRTR_DIAG_PORT_CMD 28
 #define QRTR_DIAG_PORT_DCI 31
 #define HDLC_FLAG 0x7e
+
+static FILE *g_log;
+
+static void log_evt(const char *dir, const unsigned char *p, size_t n) {
+  static char hex[2 * (65536 + 16) + 1];
+  static const char hc[] = "0123456789abcdef";
+  if (!g_log || n > 65536 + 16) return;
+  for (size_t i = 0; i < n; i++) {
+    hex[2 * i] = hc[p[i] >> 4];
+    hex[2 * i + 1] = hc[p[i] & 15];
+  }
+  hex[2 * n] = 0;
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  fprintf(g_log, "%ld.%03ld %s %zu %s\n", (long)ts.tv_sec,
+          ts.tv_nsec / 1000000, dir, n, hex);
+}
 
 static int send_frame(int qs, const unsigned char *frame, size_t len,
                       struct sockaddr_qrtr *dst) {
@@ -26,6 +44,7 @@ static int send_frame(int qs, const unsigned char *frame, size_t len,
   pkt[3] = (unsigned char)((len >> 8) & 0xff);
   memcpy(pkt + 4, frame, len);
   ssize_t n = sendto(qs, pkt, len + 4, 0, (struct sockaddr *)dst, sizeof(*dst));
+  if (n >= 0) log_evt("T>N", frame, len);
   return n < 0 ? -1 : 0;
 }
 
@@ -57,8 +76,27 @@ static int open_master(const char *link, char *pts, size_t pts_cap) {
 
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
-  const char *link = argc > 1 ? argv[1] : "/data/local/tmp/diag0";
-  int use_dci = argc > 2 && strcmp(argv[2], "dci") == 0;
+  const char *link = "/data/local/tmp/diag0";
+  const char *logpath = NULL;
+  int use_dci = 0;
+  for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "-v") && i + 1 < argc) {
+      logpath = argv[++i];
+    } else if (!strcmp(argv[i], "dci")) {
+      use_dci = 1;
+    } else if (argv[i][0] != '-') {
+      link = argv[i];
+    }
+  }
+  if (logpath) {
+    g_log = fopen(logpath, "w");
+    if (!g_log) {
+      perror("-v fopen");
+    } else {
+      setvbuf(g_log, NULL, _IOLBF, 0);
+      printf("diagtty: capture -> %s\n", logpath);
+    }
+  }
 
   int qs = socket(AF_QIPCRTR, SOCK_DGRAM, 0);
   if (qs < 0) {
@@ -137,6 +175,7 @@ int main(int argc, char **argv) {
         if (declared == (size_t)n - 4) off = 4;
       }
       ssize_t w = write(m, buf + off, (size_t)n - off);
+      if (w > 0) log_evt("N>T", buf + off, (size_t)w);
       (void)w;
     }
   }
