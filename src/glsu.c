@@ -346,8 +346,7 @@ static int uid_in_file(uid_t uid) {
   return 0;
 }
 
-static int uid_allowed(uid_t uid, uid_t extra_uid) {
-  if (uid == 0 || uid == 2000) return 1;
+static int uid_allowed(uid_t uid, uid_t extra_uid) {  if (uid == 0 || uid == 2000) return 1;
   if (extra_uid != 0 && uid == extra_uid) return 1;
   return uid_in_file(uid);
 }

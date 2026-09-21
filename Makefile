@@ -12,7 +12,7 @@ CC := $(PREBUILT)/bin/aarch64-linux-android35-clang
 CFLAGS ?= -O2 -Wall
 BIN := bin
 
-all: $(BIN)/glsu $(BIN)/diagtty $(BIN)/qrtr_probe
+all: $(BIN)/glsu $(BIN)/diagtty $(BIN)/qrtr_probe $(BIN)/diag_send
 
 $(BIN)/%: src/%.c | $(BIN)
 	$(CC) $(CFLAGS) -o $@ $<
