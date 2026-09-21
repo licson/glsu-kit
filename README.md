@@ -85,6 +85,12 @@ all pass; HA Go's "Jailbreak detected" dialog is gone. ZA Bank and Hang Seng
 additionally refuse while **USB debugging** is on — that is a stock Android
 signal, not something this kit creates.
 
+**NSG keeps its root**: the `nsg-su-scope.sh` watcher (started by the exploit's
+root script) mounts the su overlay *inside NSG's own mount namespace* within a
+couple of seconds of the app launching — NSG's PATH search finds `su`, the
+allowlisted glsu client connects as before, while every other app (and every
+other `/proc/mounts`) still sees a completely stock `/system`.
+
 Known residuals while a session is live (accepted): SELinux is permissive and
 the daemon processes run as uid 0 — TMX-class detectors (Hang Seng) can still
 flag the device. Use such apps unrooted; after a reboot (or the one-command

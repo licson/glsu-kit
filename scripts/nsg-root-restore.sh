@@ -78,7 +78,8 @@ shell "mkdir -p $GL" >/dev/null
 "$ADB" push "$BIN/glsu" "$GL/glsu" >/dev/null
 "$ADB" push "$BIN/diagtty" "$GL/diagtty" >/dev/null
 "$ADB" push "$HERE/gl-allow-device.sh" "$GL/gl-allow.sh" >/dev/null
-shell "chmod 755 /data/local/tmp/ghostlock $GL/glsu $GL/diagtty $GL/gl-allow.sh"
+"$ADB" push "$HERE/nsg-su-scope.sh" "$GL/nsg-su-scope.sh" >/dev/null
+shell "chmod 755 /data/local/tmp/ghostlock $GL/glsu $GL/diagtty $GL/gl-allow.sh $GL/nsg-su-scope.sh"
 REQ="$(mktemp)"; printf '\x7e\x37\x44\xb5\x7e' > "$REQ"
 "$ADB" push "$REQ" "$GL/req.bin" >/dev/null; rm -f "$REQ"
 ok "binaries pushed (ghostlock, glsu, diagtty)"
@@ -119,10 +120,11 @@ else
   for p in /system/bin/su /system/xbin/su /data/local/bin/su /data/local/xbin/su /data/local/su/bin/su; do
     shell "[ -e $p ] && echo hit" | grep -q hit && { bad "detector hit: $p exists"; HITS=1; }
   done
-  MNT=$(shell "grep -cE ' /system type overlay | /data/local/tmp/ovl ' /proc/mounts" | tr -d '\r\n')
-  [ "${MNT:-0}" -ge 1 ] && { bad "overlay mounts visible in /proc/mounts"; HITS=1; }
+  MNT=$(shell "grep -c ' /system overlay ' /proc/mounts" | tr -d '\r\n')
+  [ "${MNT:-0}" -ge 1 ] && { bad "overlay on /system visible globally"; HITS=1; }
   if [ "$HITS" = "0" ]; then
-    ok "no su paths, no overlay mounts — session is hidden (root via $GL/glsu)"
+    ok "no su paths, no global /system overlay — session is hidden (root via $GL/glsu;"
+    ok "NSG gets su through its own mount namespace via the nsg-su-scope watcher)"
   else
     warn "run the exploit's unroot script or reboot to reset, then re-run with a fresh hidden session"
   fi
