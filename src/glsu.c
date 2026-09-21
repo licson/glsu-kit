@@ -286,11 +286,53 @@ static void serve_connection(int c, int is_cmd) {
   _exit(0);
 }
 
+static void append_quoted(char **buf, const char *s) {
+  char *p = *buf;
+  p = stpcpy(p, "'");
+  for (const char *q = s; *q; q++) {
+    if (*q == '\'') p = stpcpy(p, "'\\''");
+    else *p++ = *q;
+  }
+  p = stpcpy(p, "' ");
+  *buf = p;
+}
+
+static int is_numeric(const char *s) {
+  if (!*s) return 0;
+  for (; *s; s++) if (*s < '0' || *s > '9') return 0;
+  return 1;
+}
+
 static int run_client(int argc, char **argv) {
   const char *cmd = NULL;
+  char joined[4096];
+  joined[0] = '\0';
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) { cmd = argv[i + 1]; break; }
     if (strncmp(argv[i], "-c", 2) == 0 && argv[i][2] != '\0') { cmd = argv[i] + 2; break; }
+    if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "-V") == 0 ||
+        strcmp(argv[i], "--version") == 0) {
+      printf("su 2.38 (glsu)\n");
+      return 0;
+    }
+    if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+      printf("usage: su [WHO] [COMMAND...]\n");
+      return 0;
+    }
+    if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "-Z") == 0 ||
+        strcmp(argv[i], "-t") == 0) { i++; continue; }
+    if (argv[i][0] == '-' && argv[i][1] && !is_numeric(argv[i] + 1)) continue;
+    /* first non-flag token: target uid/name (0, root, shell, ...) - skip it */
+    if (!joined[0] && (is_numeric(argv[i]) || !strcmp(argv[i], "root") ||
+        !strcmp(argv[i], "shell"))) { i++; if (i >= argc) break; }
+    /* remaining args: the command, re-quoted safely */
+    {
+      char *p = joined;
+      for (; i < argc; i++) append_quoted(&p, argv[i]);
+      if (p > joined) *(p - 1) = '\0';
+      cmd = joined;
+      break;
+    }
   }
   int fd = connect_daemon();
   if (fd < 0) {
