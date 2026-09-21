@@ -56,8 +56,8 @@ $ scripts/nsg-root-restore.sh
 
 The script is idempotent and, in order: preflights (kernel string, battery,
 package manager), runs the exploit only if root is absent, repairs/restarts the
-glsu daemon, mounts the su overlay (`/system/bin/su`, `/system/xbin/su` plus
-`/data/local/*/su`), starts diagtty, creates `/dev/diag`, `/dev/umts_dm0`,
+glsu daemon, verifies the session is **hidden** (no `su` in any standard path,
+no overlay mounts), starts diagtty, creates `/dev/diag`, `/dev/umts_dm0`,
 `/dev/umts_router` symlinks to the PTY, runs a DIAG VERNO round-trip self-test,
 checks kernel SELinux health (aborts if any process is `unlabeled`), and
 relaunches NSG.
@@ -68,8 +68,35 @@ while the device is `RUNNING_LOCKED`.
 Verify the bridge from the host:
 
 ```console
-$ adb shell 'su -c "ls -l /proc/$(pidof bridge)/fd"' | grep pts
+$ adb shell '/data/local/tmp/gl/glsu -c "ls -l /proc/$(pidof bridge)/fd"' | grep pts
 ```
+
+## Hiding root from detector apps
+
+Sessions are **hidden by default**: no `/system/bin/su` or `/system/xbin/su`
+(no `/system` overlay is mounted at all), no `/data/local/{bin,xbin,su/bin}/su`,
+and nothing suspicious in `/proc/mounts`. Root is reached through the glsu
+client directly — `adb shell '/data/local/tmp/gl/glsu -c "<cmd>"` — which no
+detector knows to look for, and an allowlisted app keeps using the abstract
+socket as before.
+
+Verified on-device (live session): ZA Bank, CMHK MyLink and HA Go (RootBeer)
+all pass; HA Go's "Jailbreak detected" dialog is gone. ZA Bank and Hang Seng
+additionally refuse while **USB debugging** is on — that is a stock Android
+signal, not something this kit creates.
+
+Known residuals while a session is live (accepted): SELinux is permissive and
+the daemon processes run as uid 0 — TMX-class detectors (Hang Seng) can still
+flag the device. Use such apps unrooted; after a reboot (or the one-command
+unroot script) nothing remains and all detectors behave as on a stock phone.
+
+- Unroot without rebooting:
+  `adb shell '/data/local/tmp/gl/glsu -c "sh /data/local/tmp/.ghostlock_unroot.sh"'`
+  (kills the services, lazily unmounts leftovers, removes every on-disk
+  artifact, restores enforcing SELinux — NSG's root bridge dies with it).
+- Opt back into a PATH-visible `su` (detector-visible, e.g. for interactive
+  tinkering): run the exploit with `GHOSTLOCK_MOUNT_SU=1`, or
+  `MOUNT_SU=1 scripts/nsg-root-restore.sh`.
 
 ## Granting root to other apps
 
@@ -91,9 +118,10 @@ The allowlist survives reboots (it lives in `/data`); root itself does not.
 - **Allowlisted apps get full, silent uid 0** while the session is live, amplified
   by permissive SELinux. Treat `glsu-uids` like sudoers; revoke with
   `gl-allow remove`. Reboot revokes everything.
-- **Banking apps / Play Integrity will detect a live session** (permissive
-  SELinux, `su` in standard paths, overlay on `/system`). After a reboot none of
-  that remains and the boot chain was never touched — verdicts behave as stock.
+- **Detector apps**: file/path detectors (RootBeer, Chinese packers) pass during
+  a hidden session; SELinux-permissive and process scans (TMX) can still flag it.
+  After a reboot none of the session remains and the boot chain was never
+  touched — verdicts behave as stock.
 - **Root processes run in a kernel SELinux domain** and servicemanager refuses
   them binder lookups: `su -c 'pm install …'` fails with
   `Can't find service: package`. Use plain `adb shell pm install -r file.apk`.

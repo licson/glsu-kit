@@ -2,6 +2,7 @@
 #include <endian.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -11,12 +12,48 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <linux/limits.h>
 #include <linux/un.h>
 
 #define GLSU_SOCK "glsu"
-#define GLSU_UIDS_FILE "/data/local/tmp/gl/glsu-uids"
-#define GLSU_DAEMON_LOG "/data/local/tmp/gl/glsu-daemon.log"
+#define GLSU_HOME_DEFAULT "/data/local/tmp/gl"
 #define REC_MAX (1u << 24)
+
+/* All file paths are derived from the directory of the glsu binary, so the
+ * kit is relocatable (Termux home, app-private storage, /data/local/tmp).
+ * The daemon always runs from its real location; PATH/overlay "su" copies
+ * never read or write these files. */
+static char g_home[PATH_MAX] = GLSU_HOME_DEFAULT;
+static char g_uids_file[PATH_MAX];
+static char g_daemon_log[PATH_MAX];
+static char g_cmds_log[PATH_MAX];
+static char g_in_log[PATH_MAX];
+
+static void init_paths(void) {
+  char exe[PATH_MAX];
+  ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+  if (n > 0) {
+    exe[n] = '\0';
+    char *slash = strrchr(exe, '/');
+    if (slash && slash != exe) {
+      *slash = '\0';
+    } else if (slash) {
+      strcpy(exe, "/");
+    }
+    const char *env = getenv("GLSU_HOME");
+    if (!env || !env[0] || strncmp(exe, "/system", 7) == 0) {
+      /* fall back when the binary is an overlay su copy */
+      snprintf(g_home, sizeof(g_home), "%s",
+               (env && env[0]) ? env : GLSU_HOME_DEFAULT);
+    } else {
+      snprintf(g_home, sizeof(g_home), "%s", exe);
+    }
+  }
+  snprintf(g_uids_file, sizeof(g_uids_file), "%s/glsu-uids", g_home);
+  snprintf(g_daemon_log, sizeof(g_daemon_log), "%s/glsu-daemon.log", g_home);
+  snprintf(g_cmds_log, sizeof(g_cmds_log), "%s/glsu-cmds.log", g_home);
+  snprintf(g_in_log, sizeof(g_in_log), "%s/glsu-in.log", g_home);
+}
 
 static int connect_daemon(void) {
   int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -155,19 +192,18 @@ static int drain_records(int fd, int out_r, int err_r) {
 
 static pid_t spawn_inner(int cfd, const char *cmd, char **envp,
                          int *out_r, int *err_r) {
-  static char *default_env[] = {
-    "PATH=/system/bin:/system/xbin:/vendor/bin:/system_ext/bin",
-    "HOME=/data/local/tmp",
-    "LANG=C.UTF-8",
-    NULL,
-  };
+  static char path_env[PATH_MAX + 64];
+  static char home_env[PATH_MAX + 16];
+  snprintf(path_env, sizeof(path_env),
+           "PATH=/system/bin:/system/xbin:/vendor/bin:/system_ext/bin:%s",
+           g_home);
+  snprintf(home_env, sizeof(home_env), "HOME=%s", g_home);
+  char *default_env[] = { path_env, home_env, "LANG=C.UTF-8", NULL };
   if (!envp) envp = default_env;
-  char *argv_sh[] = { "sh", NULL };
-  char *argv_tee[] = {
-    "sh", "-c",
-    "tee -a /data/local/tmp/gl/glsu-in.log | exec /system/bin/sh",
-    NULL,
-  };
+  static char tee_cmd[PATH_MAX + 64];
+  snprintf(tee_cmd, sizeof(tee_cmd),
+           "tee -a %s | exec /system/bin/sh", g_in_log);
+  char *argv_tee[] = { "sh", "-c", tee_cmd, NULL };
   char *argv_c[] = { "sh", "-c", (char *)cmd, NULL };
   char **av = cmd ? argv_c : argv_tee;
   int outp[2], errp[2];
@@ -195,8 +231,7 @@ static pid_t spawn_inner(int cfd, const char *cmd, char **envp,
 }
 
 static void log_cmd(const char *tag, const char *cmd, size_t len) {
-  int lf = open("/data/local/tmp/gl/glsu-cmds.log",
-                O_WRONLY | O_CREAT | O_APPEND, 0644);
+  int lf = open(g_cmds_log, O_WRONLY | O_CREAT | O_APPEND, 0644);
   if (lf < 0) return;
   dprintf(lf, "[%d] %s: ", (int)getpid(), tag);
   size_t cl = len > 512 ? 512 : len;
@@ -329,7 +364,7 @@ static void reaper(int sig) {
 }
 
 static int uid_in_file(uid_t uid) {
-  FILE *f = fopen(GLSU_UIDS_FILE, "r");
+  FILE *f = fopen(g_uids_file, "r");
   if (!f) return 0;
   char line[256];
   while (fgets(line, sizeof(line), f)) {
@@ -352,7 +387,7 @@ static int uid_allowed(uid_t uid, uid_t extra_uid) {  if (uid == 0 || uid == 200
 }
 
 static void log_deny(uid_t uid) {
-  int lf = open(GLSU_DAEMON_LOG, O_WRONLY | O_CREAT | O_APPEND, 0644);
+  int lf = open(g_daemon_log, O_WRONLY | O_CREAT | O_APPEND, 0644);
   if (lf < 0) return;
   dprintf(lf, "deny uid=%u\n", (unsigned)uid);
   close(lf);
@@ -425,6 +460,7 @@ static int run_daemon(uid_t extra_uid) {
 }
 
 int main(int argc, char **argv) {
+  init_paths();
   const char *base = strrchr(argv[0], '/');
   base = base ? base + 1 : argv[0];
   if (strcmp(base, "glsud") == 0 || (argc > 1 && strcmp(argv[1], "daemon") == 0)) {

@@ -2,6 +2,7 @@
 # Xperia 1 V (XQ-DQ72, 67.2.A.3.178) — temp root + NSG diag restore
 # Usage: ./nsg-root-restore.sh
 # Env:   ADB=/path/to/adb  BIN=/dir/with/built+ghostlock-binaries  GHOSTLOCK=/path/to/ghostlock
+#        MOUNT_SU=1 to also expose su on /system (GHOSTLOCK_MOUNT_SU=1) — detector-visible
 set -u
 
 ADB="${ADB:-$(command -v adb || echo "$HOME/Downloads/platform-tools/adb")}"
@@ -19,10 +20,10 @@ warn() { echo "${Y}[!]${N} $*"; }
 step() { echo "${B}== $* ==${N}"; }
 
 shell() { "$ADB" shell "$@" 2>/dev/null; }
-rootsh() { shell "/data/local/bin/su -c '$1'"; }
+rootsh() { shell "$GL/glsu -c '$1'"; }
 
 have_root() {
-  shell "/data/local/bin/su -c 'id'" 2>/dev/null | grep -q "uid=0(root)"
+  shell "$GL/glsu -c 'id'" 2>/dev/null | grep -q "uid=0(root)"
 }
 
 wait_for() {
@@ -102,30 +103,45 @@ fi
 
 step "Root services (verify/repair)"
 rootsh "for p in \$(pidof glsu 2>/dev/null); do kill -9 \$p 2>/dev/null; done; i=0; while pidof glsu >/dev/null 2>&1; do i=\$((i+1)); [ \$i -gt 10 ] && break; sleep 0.3; done; [ -f $GL/glsu-uids ] || stat -c '%u $NSG_PKG' /data/data/$NSG_PKG > $GL/glsu-uids 2>/dev/null; setsid $GL/glsu daemon < /dev/null > $GL/glsu-daemon.log 2>&1 & sleep 0.7; echo started" >/dev/null
-if shell "/data/local/bin/su -c 'id'" 2>/dev/null | grep -q "uid=0(root)"; then
-  ok "glsu su daemon working (su -c id -> uid 0)"
+if shell "$GL/glsu -c 'id'" 2>/dev/null | grep -q "uid=0(root)"; then
+  ok "glsu su daemon working (gl/glsu -c id -> uid 0)"
 else
   bad "glsu daemon not answering"; exit 1
 fi
 
-rootsh "for d in /data/local/xbin /data/local/bin /data/local/su/bin; do mkdir -p \$d 2>/dev/null; cp $GL/glsu \$d/su 2>/dev/null; chmod 755 \$d/su 2>/dev/null; done; mkdir -p /data/local/tmp/ovl; grep -q ' /data/local/tmp/ovl ' /proc/mounts || mount -t tmpfs tmpfs /data/local/tmp/ovl; mkdir -p /data/local/tmp/ovl/up /data/local/tmp/ovl/work; grep -q ' /system type overlay ' /proc/mounts || mount -t overlay overlay -o lowerdir=/system,upperdir=/data/local/tmp/ovl/up,workdir=/data/local/tmp/ovl/work /system; cp $GL/glsu /system/bin/su 2>/dev/null; chmod 755 /system/bin/su; mkdir -p /system/xbin 2>/dev/null; cp $GL/glsu /system/xbin/su 2>/dev/null; chmod 755 /system/xbin/su" >/dev/null
-SYSOK=$(shell "/system/bin/su -c 'id'" 2>/dev/null | grep -c "uid=0(root)")
-[ "$SYSOK" -ge 1 ] && ok "/system/bin/su live (overlay)" || warn "/system/bin/su not reachable — /data/local paths still active"
+if [ "${MOUNT_SU:-0}" = "1" ]; then
+  step "Mounting su on /system (detector-VISIBLE, opt-in)"
+  shell "GHOSTLOCK_MOUNT_SU=1 /data/local/tmp/ghostlock 2>/dev/null >/dev/null &" >/dev/null 2>&1
+  warn "MOUNT_SU=1 requested — su is on /system/{bin,xbin}; banking apps may refuse"
+else
+  step "Hide-root verification"
+  HITS=0
+  for p in /system/bin/su /system/xbin/su /data/local/bin/su /data/local/xbin/su /data/local/su/bin/su; do
+    shell "[ -e $p ] && echo hit" | grep -q hit && { bad "detector hit: $p exists"; HITS=1; }
+  done
+  MNT=$(shell "grep -cE ' /system type overlay | /data/local/tmp/ovl ' /proc/mounts" | tr -d '\r\n')
+  [ "${MNT:-0}" -ge 1 ] && { bad "overlay mounts visible in /proc/mounts"; HITS=1; }
+  if [ "$HITS" = "0" ]; then
+    ok "no su paths, no overlay mounts — session is hidden (root via $GL/glsu)"
+  else
+    warn "run the exploit's unroot script or reboot to reset, then re-run with a fresh hidden session"
+  fi
+fi
 
 rootsh "kill \$(pidof diagtty) 2>/dev/null; sleep 0.3; setsid $GL/diagtty /data/local/tmp/diag0 < /dev/null >> $GL/diagtty.log 2>&1 & sleep 0.7; ln -sf /data/local/tmp/diag0 /dev/umts_dm0; ln -sf /data/local/tmp/diag0 /dev/umts_router; ln -sf /data/local/tmp/diag0 /dev/diag" >/dev/null
 sleep 1
-if shell "/system/bin/su -c 'pidof diagtty'" | grep -q .; then
-  ok "diagtty running: $(shell "/system/bin/su -c 'readlink /data/local/tmp/diag0'" | tr -d '\r\n')"
+if shell "$GL/glsu -c 'pidof diagtty'" | grep -q .; then
+  ok "diagtty running: $(shell "$GL/glsu -c 'readlink /data/local/tmp/diag0'" | tr -d '\r\n')"
 else
-  bad "diagtty failed to start"; shell "/system/bin/su -c 'tail -3 $GL/diagtty.log'"; exit 1
+  bad "diagtty failed to start"; shell "$GL/glsu -c 'tail -3 $GL/diagtty.log'"; exit 1
 fi
 for l in /dev/umts_dm0 /dev/umts_router /dev/diag; do
-  shell "/system/bin/su -c '[ -c $l ] && echo y'" | grep -q y && ok "$l -> diag0" || bad "$l missing"
+  shell "$GL/glsu -c '[ -c $l ] && echo y'" | grep -q y && ok "$l -> diag0" || bad "$l missing"
 done
 
 step "Diag self-test (VERNO round-trip via QRTR)"
 rootsh "PTS=\$(readlink /data/local/tmp/diag0); rm -f $GL/diagtest.out; (cat \$PTS > $GL/diagtest.out &) ; sleep 0.3; dd if=$GL/req.bin of=\$PTS bs=5 count=1 2>/dev/null; sleep 2; pkill -f \"cat \$PTS\" 2>/dev/null; true" >/dev/null
-DIAGOK=$(shell "/system/bin/su -c 'od -An -tx1 $GL/diagtest.out 2>/dev/null'" | tr -d ' \r\n')
+DIAGOK=$(shell "$GL/glsu -c 'od -An -tx1 $GL/diagtest.out 2>/dev/null'" | tr -d ' \r\n')
 case "$DIAGOK" in
   7e01*) ok "modem answered: modem diag live" ;;
   "")    bad "no diag response — check diagtty.log / qrtr"; exit 1 ;;
@@ -133,7 +149,7 @@ case "$DIAGOK" in
 esac
 
 step "Kernel health check"
-UNLABELED=$(shell "/system/bin/su -c 'ps -AZ 2>/dev/null | grep -c unlabeled'" | tr -d '\r\n')
+UNLABELED=$(shell "$GL/glsu -c 'ps -AZ 2>/dev/null | grep -c unlabeled'" | tr -d '\r\n')
 if [ "${UNLABELED:-0}" -gt 0 ] 2>/dev/null; then
   bad "SELinux corrupted: ${UNLABELED} unlabeled processes"
   bad "kernel state is bad — stop using the phone and reboot it now"
@@ -155,7 +171,7 @@ for attempt in 1 2 3; do
 done
 if [ -n "$NPID" ]; then
   ok "NSG running (pid $NPID)"
-  BRIDGE_FD=$(shell "/system/bin/su -c 'ls -l /proc/\$(pidof bridge)/fd 2>/dev/null | grep -c pts'" | tr -d '\r\n')
+  BRIDGE_FD=$(shell "$GL/glsu -c 'ls -l /proc/\$(pidof bridge)/fd 2>/dev/null | grep -c pts'" | tr -d '\r\n')
   if [ "${BRIDGE_FD:-0}" -ge 1 ]; then
     ok "NSG bridge holds the diag pty — full modem info active"
   else
@@ -167,8 +183,11 @@ fi
 
 echo
 step "Ready"
-ok "temp root + su + QRTR diag bridge active"
+ok "temp root + QRTR diag bridge active (hidden mode)"
+echo "    one-shot:     adb shell \"$GL/glsu -c '<command>'\""
 echo "    root shell:   adb shell  ->  cd /data/local/tmp/gl  ->  cat < out &  ->  cat > in"
-echo "    one-shot:     adb shell \"/system/bin/su -c '<command>'\""
 echo "    app root:     ./gl-allow add <package>   (or: add-recent 1 | list | remove)"
-echo "    cleanup:      reboot (restores enforcing SELinux, removes overlay/su/diag)"
+echo "    unroot now:   adb shell \"$GL/glsu -c 'sh /data/local/tmp/.ghostlock_unroot.sh'\" (no reboot)"
+echo "    cleanup:      reboot (restores enforcing SELinux, removes all session state)"
+echo "    residuals:    SELinux stays permissive + uid-0 daemon procs are visible in-session;"
+echo "                  TMX-class detectors (e.g. Hang Seng) may still refuse — use them unrooted"
